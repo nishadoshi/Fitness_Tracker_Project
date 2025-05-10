@@ -1,0 +1,907 @@
+---
+title: "train-test"
+author: "Nisha Doshi"
+date: "2025-03-31"
+output: html_document
+---
+
+```{r}
+fitness_data <- read.csv("health_fitness_dataset.csv")
+
+fitness_data$health_condition <- factor(fitness_data$health_condition)
+fitness_data$health_condition <- relevel( fitness_data$health_condition, ref = "None" )
+
+
+fitness_data$smoking_status <- factor(fitness_data$smoking_status)
+fitness_data$smoking_status<- relevel( fitness_data$smoking_status, ref = "Never" )
+
+fitness_data$intensity <- factor(fitness_data$intensity)
+fitness_data$intensity <- relevel(fitness_data$intensity, ref = "Low" )
+
+```
+
+```{r}
+library(caTools)
+library(tidyverse)
+
+fitness_data_mod <- dplyr::select(fitness_data, -weight_kg, -fitness_level, -date)
+
+fitness_data_mod$weight_kg <- fitness_data_mod$bmi * (fitness_data_mod$height_cm/100)^2
+
+numeric_vars <- c("age", "height_cm", "duration_minutes", "avg_heart_rate", 
+                  "hours_sleep", "stress_level", "daily_steps", 
+                  "hydration_level", "bmi", "resting_heart_rate", 
+                  "blood_pressure_systolic", "blood_pressure_diastolic", "weight_kg")
+
+fitness_data_test <- dplyr::select(fitness_data, -weight_kg, -fitness_level, -date)
+
+fitness_data_test$weight_kg <- fitness_data_test$bmi * (fitness_data_test$height_cm/100)^2
+
+# Scale only predictor variables (center = TRUE, scale = TRUE)
+fitness_data_mod[, numeric_vars] <- scale(fitness_data_mod[, numeric_vars])
+
+
+set.seed(123)
+
+# Stratified sampling based on activity_type
+split <- sample.split(fitness_data_mod$activity_type, SplitRatio = 0.8)
+
+# Subset data into training and testing sets
+train_data <- subset(fitness_data_mod, split == TRUE)
+test_data <- subset(fitness_data_mod, split == FALSE)
+
+
+```
+
+
+```{r}
+set.seed(123)
+
+
+features_for_clustering <- train_data %>% 
+  dplyr::select(age, weight_kg)  
+
+sampled_data <- features_for_clustering %>% sample_n(10000)  # adjust n depending on your RAM
+
+fviz_nbclust(sampled_data, kmeans, method = "wss")
+
+```
+
+
+```{r}
+library(dplyr)
+
+features_for_clustering <- train_data %>% 
+  dplyr::select(age, weight_kg)  
+
+# KMeans on multivariate data
+set.seed(123)
+k_clusters <- kmeans(features_for_clustering, centers = 8)
+
+# Add cluster info to your train data
+train_data$multi_cluster <- as.factor(k_clusters$cluster)
+
+library(ggplot2)
+
+# Run PCA for visualization
+pca_result <- prcomp(features_for_clustering, scale. = TRUE)
+
+# Create a data frame for plotting
+pca_df <- as.data.frame(pca_result$x[, 1:2])  # First two principal components
+pca_df$cluster <- train_data$multi_cluster
+
+# Plot with ggplot2
+ggplot(pca_df, aes(x = PC1, y = PC2, color = cluster)) +
+  geom_point(alpha = 0.7, size = 3) +
+  labs(title = "KMeans Clustering (PCA-reduced)", x = "PC1", y = "PC2") +
+  theme_minimal()
+
+
+```
+
+This is all 1st attempt clustering code...
+library(dplyr)
+
+features_for_clustering <- train_data %>% 
+  dplyr::select(age, duration_minutes, avg_heart_rate, weight_kg, daily_steps)  
+
+# KMeans on multivariate data
+set.seed(123)
+k_clusters <- kmeans(features_for_clustering, centers = 8)
+
+# Add cluster info to your train data
+train_data$multi_cluster <- as.factor(k_clusters$cluster)
+
+library(ggplot2)
+
+# Run PCA for visualization
+pca_result <- prcomp(features_for_clustering, scale. = TRUE)
+
+# Create a data frame for plotting
+pca_df <- as.data.frame(pca_result$x[, 1:2])  # First two principal components
+pca_df$cluster <- train_data$multi_cluster
+
+# Plot with ggplot2
+ggplot(pca_df, aes(x = PC1, y = PC2, color = cluster)) +
+  geom_point(alpha = 0.7, size = 3) +
+  labs(title = "KMeans Clustering (PCA-reduced)", x = "PC1", y = "PC2") +
+  theme_minimal()
+
+
+UNSCALING AND CLUSTER ANALYSIS
+```{r}
+library(dplyr)
+
+activity_v_cluster <- train_data %>% 
+  group_by(activity_type, multi_cluster) %>%
+  summarise(count = n()) %>%
+  tidyr::pivot_wider(names_from = multi_cluster, values_from = count, values_fill = 0)
+
+
+
+# Convert to long format
+long_data <- activity_v_cluster %>%
+  pivot_longer(cols = -activity_type, names_to = "Cluster", values_to = "Count")
+
+ggplot(long_data, aes(x = Cluster, y = Count, fill = Cluster)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~activity_type, scales = "free_y") +  # one plot per activity
+  labs(title = "Cluster Distribution by Activity",
+       x = "Cluster",
+       y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none")  # Optional: remove legend since clusters are on x-axis
+
+
+
+cluster_summary <- train_data %>%
+  group_by(multi_cluster) %>%
+  summarise(
+    avg_age = round(mean(age, na.rm = TRUE), 1),
+    avg_weight = round(mean(weight_kg, na.rm = TRUE), 1),
+
+  )
+
+
+age_center <- mean(fitness_data$age)
+age_scale <- sd(fitness_data$age)
+
+
+weight_center <- mean(fitness_data$weight_kg)
+weight_scale <- sd(fitness_data$weight_kg)
+
+
+
+cluster_summary_unscaled <- cluster_summary %>%
+  mutate(
+    unscaled_avg_age = (avg_age * age_scale) + age_center,
+    unscaled_avg_weight = (avg_weight * weight_scale) + weight_center,
+  )
+
+```
+
+
+Lets see the health distribution among clusters
+This was to see whether or no health conditions should be considered in clustering 
+The disribution is fairly even throughout with some differences so I am going to use health conditions for filtering 
+
+“While health_condition was not included as a clustering variable, I analyzed its distribution across clusters post hoc. This allowed me to assess whether the clusters incidentally captured health-related patterns. The relatively even distribution of conditions such as asthma, diabetes, and hypertension suggests that clustering based on behavioral and physiological features (e.g., age, weight, heart rate) still provides useful groupings. To ensure realistic and safe recommendations, I incorporate health_condition as a filtering layer when generating activity suggestions.”
+```{r}
+cluster_1_data <- subset(train_data, multi_cluster == 1)
+cluster_2_data <- subset(train_data,multi_cluster ==2)
+cluster_3_data <- subset(train_data, multi_cluster ==3)
+cluster_4_data <- subset(train_data, multi_cluster == 4)
+cluster_5_data <- subset(train_data, multi_cluster == 5)
+cluster_6_data <- subset(train_data, multi_cluster ==6)
+cluster_7_data <-subset(train_data, multi_cluster ==7)
+cluster_8_data <-subset(train_data, multi_cluster ==8)
+
+table(cluster_1_data$health_condition)
+table(cluster_2_data$health_condition)
+table(cluster_3_data$health_condition)
+table(cluster_4_data$health_condition)
+table(cluster_5_data$health_condition)
+table(cluster_6_data$health_condition)
+table(cluster_7_data$health_condition)
+table(cluster_8_data$health_condition)
+
+health_cluster_counts <- train_data %>%
+  group_by(multi_cluster, health_condition) %>%
+  summarise(count = n(), .groups = 'drop')
+
+# Option 1: Stacked bar plot (raw counts)
+ggplot(health_cluster_counts, aes(x = multi_cluster, y = count, fill = health_condition)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Health Conditions by Cluster", x = "Cluster", y = "Count") +
+  theme_minimal()
+
+```
+```{r}
+table(cluster_1_data$smoking_status)
+table(cluster_2_data$smoking_status)
+table(cluster_3_data$smoking_status)
+table(cluster_4_data$smoking_status)
+table(cluster_5_data$smoking_status)
+table(cluster_6_data$smoking_status)
+table(cluster_7_data$smoking_status)
+table(cluster_8_data$smoking_status)
+
+health_cluster_counts <- train_data %>%
+  group_by(multi_cluster, smoking_status) %>%
+  summarise(count = n(), .groups = 'drop')
+
+# Option 1: Stacked bar plot (raw counts)
+ggplot(health_cluster_counts, aes(x = multi_cluster, y = count, fill = smoking_status)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Smoking Status by Cluster", x = "Cluster", y = "Count") +
+  theme_minimal()
+
+```
+
+
+
+```{r}
+## create 10 groups splits on activity type
+groups <- split(train_data, train_data$activity_type)
+
+basketball <- groups[[1]]
+cycling <- groups[[2]]
+dancing <- groups[[3]]
+hiit <- groups[[4]]
+running <- groups[[5]]
+swimming <- groups[[6]]
+tennis <- groups[[7]]
+walking <- groups[[8]]
+weight_training <- groups[[9]]
+yoga <- groups[[10]]
+
+
+```
+
+
+```{r}
+
+##dont use
+cluster_scaled_means <- train_data %>%
+  group_by(multi_cluster) %>%
+  summarise(
+    avg_age = mean(age),
+    avg_duration = mean(duration_minutes),
+    avg_heart_rate = mean(avg_heart_rate),
+    avg_weight = mean(weight_kg),
+    avg_steps = mean(daily_steps),
+    avg_sleep = mean(hours_sleep),
+    .groups = "drop"
+  )
+
+print(cluster_scaled_means)
+```
+
+
+
+```{r}
+##dont use
+library(dplyr)
+
+cluster_summary <- train_data_unscaled %>%
+  group_by(multi_cluster) %>%
+  summarise(
+    count = n(),
+    avg_age = round(mean(age_unscaled), 1),
+    avg_duration = round(mean(duration_minutes_unscaled), 1),
+    avg_heart_rate = round(mean(avg_heart_rate_unscaled), 1),
+    avg_weight = round(mean(weight_kg_unscaled), 1),
+    avg_steps = round(mean(daily_steps_unscaled), 0),
+    avg_sleep = round(mean(hours_sleep_unscaled), 1)
+  )
+
+```
+
+
+```{r}
+library(dplyr)
+
+# Ensure groups list has names
+names(groups) <- unique(train_data$activity_type)
+
+# Create an empty list to store the summarized data frames
+condensed_groups <- list()
+
+# Loop through each activity type
+for (activity in names(groups)) {
+  condensed_groups[[activity]] <- groups[[activity]] %>%
+    group_by(participant_id) %>%
+    summarise(
+      age = first(age),
+      gender = first(gender),
+      height_cm = first(height_cm),
+      resting_heart_rate = first(resting_heart_rate),
+      blood_pressure_diastolic = first(blood_pressure_diastolic),
+      blood_pressure_systolic = first(blood_pressure_systolic),
+      health_condition = first(health_condition),
+      smoking_status = first(smoking_status),
+      bmi = first(bmi),
+      weight_kg = first(weight_kg),
+      
+      duration_minutes = mean(duration_minutes, na.rm = TRUE),
+      calories_burned = mean(calories_burned, na.rm = TRUE),
+      avg_heart_rate = mean(avg_heart_rate, na.rm = TRUE),
+      hours_sleep = mean(hours_sleep, na.rm = TRUE),
+      stress_level = mean(stress_level, na.rm = TRUE),
+      daily_steps = mean(daily_steps, na.rm = TRUE),
+      hydration_level = mean(hydration_level, na.rm = TRUE), 
+      
+      intensity = names(sort(table(intensity), decreasing = TRUE)[1]),
+      multi_cluster = names(sort(table(multi_cluster), decreasing = TRUE)[1])
+    )
+}
+
+# Assign each summarized dataset as a separate variable
+list2env(condensed_groups, envir = .GlobalEnv)
+
+
+```
+
+Now that I have my clusters, I am going to split each activity data set by cluster 
+```{r}
+split_data <- list()
+
+# Loop over each activity and split by cluster
+for (activity in names(condensed_groups)) {
+  df <- condensed_groups[[activity]]
+  
+  for (cluster in unique(df$multi_cluster)) {
+    cluster_df <- df[df$multi_cluster == cluster, ]
+    
+    # Drop columns you don’t want in your modeling
+    cluster_df <- cluster_df %>%
+      dplyr::select(-multi_cluster, -participant_id, -bmi)  # adjust this list if needed
+    
+    # Save it in a nested list structure
+    split_data[[paste(activity, cluster, sep = "_Cluster")]] <- cluster_df
+  }
+}
+
+```
+
+TESTING 1MODEL
+Running step wise to see if there is a maximal model w the lowest AIC
+However, turns out the full model is the best model, it has the lowest AIC and each time a predictor gets removed the AIC significantly increases. 
+
+Also the VIF will tell me if age or avg heart rate needs to be removed, neight do! low enough numbers to not be considered for multicollinearity. In some models age and avg heart rate show significant and in other only age or only avg heart rate show up significant 
+```{r}
+example <- lm(calories_burned ~ . , data = split_data[["HIIT_Cluster4"]])
+example1 <- lm(calories_burned ~ . , data = split_data[["HIIT_Cluster4"]])
+example2 <- lm(sqrt(calories_burned) ~. -avg_heart_rate , data = split_data[["HIIT_Cluster4"]])
+summary(example)
+summary(example1)
+summary(example2)
+
+vif(example)
+
+par(mfrow = c(2, 2))
+plot(example)
+
+require(MASS)
+boxcox(example)
+
+par(mfrow = c(2, 2))
+plot(example1)
+
+par(mfrow = c(2, 2))
+plot(example2)
+```
+
+BOXCOX= 0.5 indiciating to use square root, however noticing that srt is decreasing the R^2
+
+
+```{r}
+# Fit a model on one of the sets
+
+model <- lm(sqrt(calories_burned) ~ . , data = split_data[["Dancing_Cluster4"]])
+summary(model)
+model1 <- lm(sqrt(calories_burned) ~ . , data = split_data[["HIIT_Cluster4"]])
+model2 <- lm(sqrt(calories_burned) ~ . , data = split_data[["Walking_Cluster4"]])
+test_user <- condensed_test_data %>% 
+  filter(participant_id == 1)
+
+pred1 <- predict(model, newdata = test_user)
+pred2 <- predict(model1, newdata = test_user)
+pred3 <- predict(model2, newdata = test_user)
+pred1^2
+pred2^2
+pred3^2
+
+require(MASS)
+max_model = lm(sqrt(calories_burned) ~ . , data = split_data[["HIIT_Cluster4"]])
+best_model = step(max_model, direction = "backward")
+
+
+library(car)
+vif(model)
+
+```
+
+now lets run it across all activities and clusters
+
+```{r}
+# Initialize a list to store models
+models <- list()
+
+# Loop through each dataset in split_data
+for (dataset_name in names(split_data)) {
+  # Fit the linear model on the dataset
+  model <- lm(sqrt(calories_burned) ~ . -avg_heart_rate, data = split_data[[dataset_name]])
+  
+  # Store the model in the list
+  models[[dataset_name]] <- model
+  
+  # Print the summary of the model (optional, to check the results)
+  print(paste("Model for", dataset_name))
+  print(summary(model))
+}
+
+```
+ANALYSIS (PLOTS ETC ETC ETC) 
+```{r}
+
+```
+
+
+
+
+OK NOW TESTINGGGG
+
+Using Eucilidean distance for test clustering. 
+```{r}
+test_features <- test_data %>% 
+  dplyr::select(age, weight_kg)
+
+assign_clusters <- function(new_data, centers) {
+  apply(new_data, 1, function(row) {
+    dists <- apply(centers, 1, function(center) sum((row - center)^2))
+    which.min(dists)
+  })
+}
+
+# Assign clusters to test data
+test_data$multi_cluster <- as.factor(assign_clusters(test_features, k_clusters$centers))
+
+
+```
+
+
+```{r}
+# Condense the test set by participant_id
+condensed_test_data <- test_data %>%
+  group_by(participant_id) %>%
+  summarise(
+    age = first(age),
+    gender = first(gender),
+    height_cm = first(height_cm),
+    resting_heart_rate = first(resting_heart_rate),
+    blood_pressure_diastolic = first(blood_pressure_diastolic),
+    blood_pressure_systolic = first(blood_pressure_systolic),
+    health_condition = first(health_condition),
+    smoking_status = first(smoking_status),
+    bmi = first(bmi),
+    weight_kg = first(weight_kg),
+    
+    duration_minutes = mean(duration_minutes, na.rm = TRUE),
+    calories_burned = mean(calories_burned, na.rm = TRUE),
+    avg_heart_rate = mean(avg_heart_rate, na.rm = TRUE),
+    hours_sleep = mean(hours_sleep, na.rm = TRUE),
+    stress_level = mean(stress_level, na.rm = TRUE),
+    daily_steps = mean(daily_steps, na.rm = TRUE),
+    hydration_level = mean(hydration_level, na.rm = TRUE), 
+    
+    intensity = names(sort(table(intensity), decreasing = TRUE)[1]),
+      multi_cluster = names(sort(table(multi_cluster), decreasing = TRUE)[1]),
+    
+    # Assign the most frequent activity type for each participant
+    activity_type = names(sort(table(activity_type), decreasing = TRUE)[1])
+  )
+```
+
+```{r}
+set.seed(42)
+sampled_test_users <- test_data %>%
+  group_by(multi_cluster) %>%
+  slice_sample(n = 1)
+
+
+# Initialize an empty list to hold models by cluster
+cluster_models <- list()
+
+# Loop over each model name in the models list
+for (model_name in names(models)) {
+  # Split the model name (e.g., "Dancing_Cluster4") into parts
+  name_parts <- strsplit(model_name, "_")[[1]]
+  cluster_number <- name_parts[2]  # e.g., "Cluster4"
+  
+  # Initialize list for this cluster if it doesn't exist
+  if (!(cluster_number %in% names(cluster_models))) {
+    cluster_models[[cluster_number]] <- list()
+  }
+  
+  # Add the model to the corresponding cluster group
+  cluster_models[[cluster_number]][[model_name]] <- models[[model_name]]
+}
+
+# Done!
+print(names(cluster_models))
+
+```
+
+
+
+CLUSTER 4 
+```{r}
+# Filter the test user
+test_user <- condensed_test_data %>% 
+  filter(participant_id == 1)
+
+# Get models for Cluster 4
+models_cluster4 <- cluster_models[["Cluster4"]]
+
+# Initialize a list to store predictions
+predictions <- list()
+
+# Loop through each model in Cluster 4
+for (model_name in names(models_cluster4)) {
+  model <- models_cluster4[[model_name]]
+  
+  # Predict
+  pred <- predict(model, newdata = test_user)
+  
+  # Square it (since you used sqrt in training)
+  pred_squared <- pred^2
+  
+  # Store in list with model name
+  predictions[[model_name]] <- pred_squared
+}
+
+# View predictions
+print(predictions)
+
+```
+
+CLUSTER 1
+```{r}
+## 614 
+## 775
+test_user <- condensed_test_data %>% 
+  filter(participant_id == 614)
+
+# Get models for Cluster 4
+models_cluster1 <- cluster_models[["Cluster1"]]
+
+# Initialize a list to store predictions
+predictions <- list()
+
+# Loop through each model in Cluster 4
+for (model_name in names(models_cluster1)) {
+  model <- models_cluster1[[model_name]]
+  
+  # Predict
+  pred <- predict(model, newdata = test_user)
+  
+  # Square it (since you used sqrt in training)
+  pred_squared <- pred^2
+  
+  # Store in list with model name
+  predictions[[model_name]] <- pred_squared
+}
+
+# View predictions
+print(predictions)
+
+```
+
+ClUSTER 2 
+```{r}
+test_user <- condensed_test_data %>% 
+  filter(participant_id == 336)
+
+# Get models for Cluster 4
+models_cluster4 <- cluster_models[["Cluster2"]]
+
+# Initialize a list to store predictions
+predictions <- list()
+
+# Loop through each model in Cluster 4
+for (model_name in names(models_cluster4)) {
+  model <- models_cluster4[[model_name]]
+  
+  # Predict
+  pred <- predict(model, newdata = test_user)
+  
+  # Square it (since you used sqrt in training)
+  pred_squared <- pred^2
+  
+  # Store in list with model name
+  predictions[[model_name]] <- pred_squared
+}
+
+# View predictions
+print(predictions)
+```
+
+
+CLUSTER 3
+```{r}
+##916
+test_user <- condensed_test_data %>% 
+  filter(participant_id == 3)
+
+# Get models for Cluster 3
+models_cluster3 <- cluster_models[["Cluster3"]]
+
+# Initialize a list to store predictions
+predictions <- list()
+
+# Loop through each model in Cluster 3
+for (model_name in names(models_cluster3)) {
+  model <- models_cluster3[[model_name]]
+  
+  # Predict
+  pred <- predict(model, newdata = test_user)
+  
+  # Square it (since you used sqrt in training)
+  pred_squared <- pred^2
+  
+  # Store in list with model name
+  predictions[[model_name]] <- pred_squared
+}
+
+# View predictions
+print(predictions)
+```
+CLUSTER 4
+```{r}
+##1373
+test_user <- condensed_test_data %>% 
+  filter(participant_id == 1373)
+
+# Get models for Cluster 3
+models_cluster4 <- cluster_models[["Cluster4"]]
+
+# Initialize a list to store predictions
+predictions <- list()
+
+# Loop through each model in Cluster 4
+for (model_name in names(models_cluster4)) {
+  model <- models_cluster4[[model_name]]
+  
+  # Predict
+  pred <- predict(model, newdata = test_user)
+  
+  # Square it (since you used sqrt in training)
+  pred_squared <- pred^2
+  
+  # Store in list with model name
+  predictions[[model_name]] <- pred_squared
+}
+
+# View predictions
+print(predictions)
+```
+view(fitness_data_test %>% filter(participant_id == 916))
+view(condensed_test_data %>% filter(multi_cluster==4))
+
+CLUSTER 5
+```{r}
+##637
+test_user <- condensed_test_data %>% 
+  filter(participant_id == 637)
+
+# Get models for Cluster 3
+models_cluster5 <- cluster_models[["Cluster5"]]
+
+# Initialize a list to store predictions
+predictions <- list()
+
+# Loop through each model in Cluster 5
+for (model_name in names(models_cluster5)) {
+  model <- models_cluster5[[model_name]]
+  
+  # Predict
+  pred <- predict(model, newdata = test_user)
+  
+  # Square it (since you used sqrt in training)
+  pred_squared <- pred^2
+  
+  # Store in list with model name
+  predictions[[model_name]] <- pred_squared
+}
+
+# View predictions
+print(predictions)
+```
+CLUSTER 6
+```{r}
+##637
+test_user <- condensed_test_data %>% 
+  filter(participant_id == 1350)
+
+# Get models for Cluster 6
+models_cluster6 <- cluster_models[["Cluster6"]]
+
+# Initialize a list to store predictions
+predictions <- list()
+
+# Loop through each model in Cluster 6
+for (model_name in names(models_cluster6)) {
+  model <- models_cluster6[[model_name]]
+  
+  # Predict
+  pred <- predict(model, newdata = test_user)
+  
+  # Square it (since you used sqrt in training)
+  pred_squared <- pred^2
+  
+  # Store in list with model name
+  predictions[[model_name]] <- pred_squared
+}
+
+# View predictions
+print(predictions)
+```
+
+
+PREVIOUS WORK 
+```{r}
+models <- list()
+
+# Loop through each summarized dataset
+for (activity in names(condensed_groups)) {
+  df <- condensed_groups[[activity]]
+  
+  # Check if there are enough rows for regression
+  if (nrow(df) > 1) {  
+    models[[activity]] <- lm(sqrt(calories_burned) ~ . -participant_id -bmi -avg_heart_rate, data = df)
+  } else {
+    models[[activity]] <- NULL  # Skip if not enough data
+  }
+}
+
+for (activity in names(models)) {
+    cat("### Summary for Activity:", activity, "###\n")
+    print(summary(models[[activity]]))
+  }
+
+
+ggplot(condensed_mod, aes(x = health_condition, y = calories_burned, fill = health_condition)) +
+  geom_boxplot() +
+  labs(title = "Calories Burned Across Health Conditions", x = "Health Condition", y = "Calories") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+plot(condensed_mod$weight_kg, condensed_mod$calories_burned)
+
+library(ggplot2)
+
+ggplot(condensed_mod, aes(x = weight_kg, y = calories_burned)) +
+  geom_point(color = "steelblue", size = 3, alpha = 0.7) + # Add points
+  geom_smooth(method = "lm", se = FALSE, color = "orange") + # Add a linear regression line
+  labs(
+    title = "Calories Burned vs. Weight",
+    x = "Weight (kg)",
+    y = "Calories Burned"
+  ) +
+  theme_minimal() + # Use a clean theme
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"), # Center title and make it bold
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+
+
+# 1. Histogram of Duration
+# 2. Density Plot of Duration
+ggplot(condensed_mod, aes(x = duration_minutes)) +
+  geom_density(fill = "lightgreen", alpha = 0.7) +
+  labs(
+    title = "Density Plot of Activity Durations",
+    x = "Duration (minutes)",
+    y = "Density"
+  ) +
+  theme_minimal()
+
+
+```
+
+```{r}
+# Extract coefficients from each model into a dataframe
+coef_table <- do.call(cbind, lapply(models, function(mod) coef(summary(mod))[, "Estimate"])) 
+
+# Convert to data frame and give row names
+coef_table <- as.data.frame(coef_table)
+rownames(coef_table) <- names(coef(models[[1]]))  # Set variable names as row names
+
+```
+
+```{r}
+library(ggplot2)
+library(reshape2) # To reshape data
+
+coef_table$Predictor <- rownames(coef_table)
+# Convert to long format
+coef_long <- melt(coef_table, id.vars = "Predictor", variable.name = "Activity", value.name = "Coefficient")
+
+# Exclude a specific predictor (e.g., "bmi")
+coef_long_filtered <- coef_long %>% filter(Predictor != "(Intercept)")
+
+# Plot without "bmi"
+ggplot(coef_long_filtered, aes(x = Activity, y = Coefficient, color = Predictor)) +
+  geom_point() +
+  theme_minimal() +
+  coord_flip() +
+  labs(title = "Comparison of Coefficients Across Activities")
+```
+
+```{r}
+# Filter for only "duration_minutes"
+coef_duration <- coef_long %>% filter(Predictor == "duration_minutes")
+
+# Plot duration_minutes coefficients across activities
+ggplot(coef_duration, aes(x = Activity, y = Coefficient)) +
+  geom_col(fill = "steelblue") +  # Use bars instead of points for better comparison
+  theme_minimal() +
+  coord_flip() +  # Flip for better readability
+  labs(title = "Effect of Duration (minutes) Across Activities",
+       y = "Coefficient Value",
+       x = "Activity Type")
+```
+
+```{r}
+# Filter for only "daily_steps"
+coef_steps <- coef_long %>% filter(Predictor == "daily_steps")
+
+# Plot daily steps coefficients across activities
+ggplot(coef_steps, aes(x = Activity, y = Coefficient)) +
+  geom_col(fill = "steelblue") +  # Use bars instead of points for better comparison
+  theme_minimal() +
+  coord_flip() +  # Flip for better readability
+  labs(title = "Effect of Daily Steps Across Activities",
+       y = "Coefficient Value",
+       x = "Activity Type")
+```
+
+
+
+```{r}
+fitness_data_mod1 <- dplyr::select(fitness_data, -weight_kg, -fitness_level, -date)
+
+fitness_data_mod1$weight_kg <- fitness_data_mod1$bmi * (fitness_data_mod1$height_cm/100)^2
+
+condensed_mod <- fitness_data_mod1 %>%
+  group_by(participant_id) %>%
+  summarise(
+    age = first(age),
+    gender = first(gender),
+    height_cm = first(height_cm),
+    resting_heart_rate = first(resting_heart_rate),
+    blood_pressure_diastolic = first(blood_pressure_diastolic),
+    blood_pressure_systolic = first(blood_pressure_systolic),
+    health_condition = first(health_condition),
+    smoking_status = first(smoking_status),
+    bmi = first(bmi),
+    weight_kg = first(weight_kg),
+    
+    duration_minutes = mean(duration_minutes, na.rm = TRUE),
+    calories_burned = mean(calories_burned, na.rm = TRUE),
+    avg_heart_rate = mean(avg_heart_rate, na.rm = TRUE),
+    hours_sleep = mean(hours_sleep, na.rm = TRUE),
+    stress_level = mean(stress_level, na.rm = TRUE),
+    daily_steps = mean(daily_steps, na.rm = TRUE),
+    hydration_level = mean(hydration_level, na.rm = TRUE), 
+    
+    intensity = names(sort(table(intensity), decreasing = TRUE)[1]),
+    
+    # Assign the most frequent activity type for each participant
+    activity_type = names(sort(table(activity_type), decreasing = TRUE)[1])
+  )
+```
+
+
